@@ -10,6 +10,7 @@ import {
   Check,
   Sparkles,
   Share2,
+  Download,
   History,
   X,
   Loader2,
@@ -30,6 +31,7 @@ import { toast } from "sonner";
 import { useServerFn } from "@tanstack/react-start";
 import { decodeVinNhtsa, lookupWmiDetails } from "@/lib/vin.functions";
 import { VinScanner } from "@/components/vin-scanner";
+import { findRegionalVinSpec } from "@/lib/vin-registry";
 
 // ============ NHTSA vPIC API ============
 // API pública oficial del NHTSA para decodificar VINs — sin auth, CORS habilitado.
@@ -514,64 +516,6 @@ const WMI_MANUFACTURER_NAMES: Record<string, string> = {
   MHK: "PT Astra Daihatsu Motor",
 };
 
-type RegionalVinSpec = {
-  prefix: string;
-  make: string;
-  model: string;
-  body: string;
-  drive: string;
-  engineFamily: string;
-  displacement: string;
-  fuel: string;
-  transmission?: string;
-  production: string;
-  facts?: Array<{ label: string; value: string; confidence: "confirmed" | "model" | "verify" }>;
-  evidence: string;
-  sourceUrl: string;
-};
-
-// Patrones regionales respaldados por documentación del fabricante. Estos
-// complementan a NHTSA, cuya cobertura se concentra en el mercado de EE. UU.
-const REGIONAL_VIN_SPECS: RegionalVinSpec[] = [
-  {
-    prefix: "8AJBA3CD",
-    make: "Toyota",
-    model: "Hilux",
-    body: "Pickup · doble cabina",
-    drive: "4x4",
-    engineFamily: "1GD · turbodiésel",
-    displacement: "2.8 L · 2.755 cm³",
-    fuel: "Diésel",
-    production: "Toyota Argentina · Zárate",
-    evidence: "Modelo confirmado por patrón; versión y equipamiento deben verificarse en placa o ficha de fábrica.",
-    sourceUrl: "https://media.toyota.com.br/63aeb2e6-b2c4-4917-bc26-47e0ac33a0a4.pdf",
-  },
-  {
-    prefix: "MHKAB1BA",
-    make: "Toyota",
-    model: "Raize 1.2 G",
-    body: "SUV compacto · 5 puertas",
-    drive: "4x2 · tracción delantera",
-    engineFamily: "WA-VE · 3 cilindros DOHC Dual VVT-i",
-    displacement: "1.2 L · 1.198 cm³",
-    fuel: "Gasolina · inyección EFI",
-    transmission: "Manual 5 vel. o CVT · confirmar variante",
-    production: "PT Astra Daihatsu Motor · Indonesia",
-    facts: [
-      { label: "Potencia máxima", value: "88 PS a 6.000 rpm", confidence: "model" },
-      { label: "Torque máximo", value: "113 Nm a 4.500 rpm", confidence: "model" },
-      { label: "Dimensiones", value: "4.030 × 1.710 × 1.635 mm", confidence: "model" },
-      { label: "Distancia entre ejes", value: "2.525 mm", confidence: "model" },
-      { label: "Despeje al suelo", value: "200 mm", confidence: "model" },
-      { label: "Tanque de combustible", value: "36 L", confidence: "model" },
-      { label: "Código de planta", value: "J · tabla pública no disponible", confidence: "verify" },
-      { label: "Variante / equipamiento", value: "Debe confirmarse en placa o documento", confidence: "verify" },
-    ],
-    evidence: "MHK identifica a PT Astra Daihatsu Motor y AB1BA está corroborado como Toyota Raize 1.2. La ficha del modelo aporta las especificaciones; transmisión y equipamiento deben confirmarse documentalmente.",
-    sourceUrl: "https://www.toyota.astra.co.id/sites/default/files/2022-08/brochures/leaflet_raize_grs_0722.pdf",
-  },
-];
-
 const YEAR_MAP: Record<string, number> = {
   "1": 2001, "2": 2002, "3": 2003, "4": 2004, "5": 2005,
   "6": 2006, "7": 2007, "8": 2008, "9": 2009,
@@ -693,7 +637,7 @@ function VinPage() {
     const checkRequired = isCheckDigitMandatory(vin);
     const checkValid =
       expectedCheck !== null && vin.length === 17 ? expectedCheck === check : null;
-    const regionalSpec = REGIONAL_VIN_SPECS.find((spec) => vin.startsWith(spec.prefix)) ?? null;
+    const regionalSpec = findRegionalVinSpec(vin);
     return {
       wmi,
       country,
@@ -763,6 +707,28 @@ function VinPage() {
       totalFields: officialFields + registryFields + structuralFields + regionalFields,
     };
   }, [decoded, nhtsa, wmiDetails]);
+
+  const decodingCoverage = useMemo(() => {
+    if (decoded.regionalSpec && decoded.wmi && decoded.year) {
+      return {
+        level: "Alta",
+        detail: `Coincidencia regional ${decoded.regionalSpec.prefix} + WMI + año modelo`,
+        className: "border-emerald-300/30 bg-emerald-300/10 text-emerald-200",
+      };
+    }
+    if (nhtsa || wmiDetails) {
+      return {
+        level: "Media",
+        detail: "Estructura VIN enriquecida con una fuente técnica externa",
+        className: "border-cyan-300/30 bg-cyan-300/10 text-cyan-200",
+      };
+    }
+    return {
+      level: "Estructural",
+      detail: "Lectura ISO, WMI, VDS, año, planta y serie",
+      className: "border-amber-300/30 bg-amber-300/10 text-amber-200",
+    };
+  }, [decoded.regionalSpec, decoded.wmi, decoded.year, nhtsa, wmiDetails]);
 
   // Guardar en historial cuando el VIN es válido (una sola vez por valor)
   useEffect(() => {
@@ -905,6 +871,96 @@ function VinPage() {
     } catch {
       /* usuario canceló */
     }
+  };
+
+  const exportVinRecord = () => {
+    if (!isComplete) return;
+    const officialData = nhtsa
+      ? Object.fromEntries(
+          Object.entries(nhtsa).filter(
+            ([key, value]) => !IGNORED_KEYS.has(key) && isMeaningfulValue(value),
+          ),
+        )
+      : null;
+    const record = {
+      schemaVersion: "1.0",
+      generatedAt: new Date().toISOString(),
+      scope: "Decodificación técnica de VIN / número de chasis",
+      vin,
+      validation: {
+        length: vin.length,
+        complete: isComplete,
+        checkDigit: decoded.check,
+        expectedCheckDigit: decoded.expectedCheck,
+        checkDigitMandatory: decoded.checkRequired,
+        checkDigitMatches: decoded.checkValid,
+      },
+      structure: {
+        wmi: decoded.wmi,
+        country: decoded.country,
+        manufacturer: decoded.manufacturerName || decoded.maker,
+        vds: decoded.vds,
+        modelYearCode: decoded.yearChar,
+        modelYear: decoded.year ?? null,
+        plantCode: decoded.plant,
+        productionSequence: decoded.serial,
+      },
+      vehicle: {
+        make: automaticProfile.make,
+        model: automaticProfile.model,
+        body: automaticProfile.body,
+        drive: automaticProfile.drive,
+        engineFamily: automaticProfile.engine,
+        displacement: automaticProfile.displacement,
+        fuel: automaticProfile.fuel,
+        transmission: automaticProfile.transmission,
+        production: automaticProfile.production,
+      },
+      coverage: {
+        level: decodingCoverage.level,
+        detail: decodingCoverage.detail,
+        consolidatedFields: automaticProfile.totalFields,
+        counts: {
+          isoStructure: automaticProfile.structuralFields,
+          regionalCatalog: automaticProfile.regionalFields,
+          wmiRegistry: automaticProfile.registryFields,
+          nhtsaVpic: automaticProfile.officialFields,
+        },
+      },
+      regionalRule: decoded.regionalSpec
+        ? {
+            prefix: decoded.regionalSpec.prefix,
+            market: decoded.regionalSpec.market,
+            evidence: decoded.regionalSpec.evidence,
+            sourceTitle: decoded.regionalSpec.sourceTitle,
+            sourceUrl: decoded.regionalSpec.sourceUrl,
+            reviewedAt: decoded.regionalSpec.reviewedAt,
+            modelFacts: decoded.regionalSpec.facts ?? [],
+          }
+        : null,
+      externalData: {
+        nhtsaVpic: officialData,
+        wmiRegistry: wmiDetails,
+      },
+      notEncodedInVin: [
+        "color actual del vehículo",
+        "matrícula o placa",
+        "número individual del motor",
+        "propietario",
+      ],
+    };
+    const blob = new Blob([JSON.stringify(record, null, 2)], {
+      type: "application/json;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `ficha-vin-${vin}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    toast.success("Ficha técnica exportada en JSON");
   };
 
   const removeFromHistory = (v: string) => {
@@ -1071,6 +1127,16 @@ function VinPage() {
                 type="button"
                 variant="outline"
                 size="sm"
+                onClick={exportVinRecord}
+                disabled={!isComplete}
+                className="gap-2 border-amber-300/40 bg-amber-300/[0.06] text-amber-100 hover:bg-amber-300/15 hover:text-white disabled:opacity-40"
+              >
+                <Download className="h-4 w-4" /> Exportar ficha
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
                 onClick={() => setVin("")}
                 disabled={!vin}
                 className="gap-2 border-cyan-400/40 bg-transparent text-cyan-200 hover:bg-cyan-400/10 hover:text-cyan-100 disabled:opacity-40"
@@ -1087,8 +1153,8 @@ function VinPage() {
           <div className="mt-4 flex gap-3 rounded-xl border border-amber-300/15 bg-amber-300/[0.04] p-3 text-[11px] leading-relaxed text-slate-400">
             <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
             <p>
-              Herramienta de apoyo técnico. Los datos ampliados provienen de NHTSA vPIC y son referenciales;
-              no sustituyen la inspección física ni una certificación emitida por la Aduana Nacional.
+              Herramienta de apoyo técnico limitada al VIN o número de chasis. Consolida estructura ISO,
+              fabricante WMI y fichas técnicas; no consulta registros de vehículos ni datos personales.
             </p>
           </div>
 
@@ -1162,6 +1228,9 @@ function VinPage() {
                     <span className="rounded-full border border-emerald-300/25 bg-emerald-300/10 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-emerald-200">
                       {isValid ? "VIN verificado" : "VIN completo"}
                     </span>
+                    <span className={`rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-wider ${decodingCoverage.className}`}>
+                      Cobertura {decodingCoverage.level}
+                    </span>
                   </div>
                   <p className="text-sm font-medium text-slate-400">{automaticProfile.make}</p>
                   <h2 className="mt-1 text-3xl font-bold tracking-[-0.035em] text-white sm:text-5xl">
@@ -1226,13 +1295,37 @@ function VinPage() {
                 </dl>
               </div>
             )}
+            <div className="grid gap-px border-t border-white/10 bg-white/10 md:grid-cols-[1.2fr_1fr_1fr]">
+              <div className="bg-[#071426] p-5 sm:p-6">
+                <p className="font-mono text-[9px] uppercase tracking-[0.22em] text-cyan-300">Cobertura de decodificación</p>
+                <p className="mt-2 text-base font-semibold text-white">{decodingCoverage.detail}</p>
+                {decoded.regionalSpec && (
+                  <p className="mt-2 text-xs leading-relaxed text-slate-400">
+                    Regla <span className="font-mono text-amber-200">{decoded.regionalSpec.prefix}</span>
+                    {" · "}{decoded.regionalSpec.market}{" · revisada "}{decoded.regionalSpec.reviewedAt}
+                  </p>
+                )}
+              </div>
+              <div className="bg-[#071426] p-5 sm:p-6">
+                <p className="font-mono text-[9px] uppercase tracking-[0.22em] text-emerald-300">Sí puede determinar</p>
+                <p className="mt-2 text-xs leading-relaxed text-slate-300">
+                  Origen, fabricante, año modelo, familia de vehículo y motor cuando existe una regla técnica comprobada.
+                </p>
+              </div>
+              <div className="bg-[#071426] p-5 sm:p-6">
+                <p className="font-mono text-[9px] uppercase tracking-[0.22em] text-amber-300">No viene codificado</p>
+                <p className="mt-2 text-xs leading-relaxed text-slate-300">
+                  Color actual, matrícula, propietario y número individual del motor no se obtienen del VIN.
+                </p>
+              </div>
+            </div>
             <div className="flex flex-col gap-2 border-t border-white/10 px-5 py-4 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between">
               <p className="flex max-w-3xl items-start gap-2 leading-relaxed">
                 <Info className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" />
                 {decoded.regionalSpec?.evidence ?? "Ficha consolidada automáticamente con estructura ISO 3779, fabricante WMI y datos oficiales disponibles."}
               </p>
               {decoded.regionalSpec && (
-                <a href={decoded.regionalSpec.sourceUrl} target="_blank" rel="noreferrer" className="shrink-0 text-amber-300 underline-offset-4 hover:underline">Referencia del fabricante</a>
+                <a href={decoded.regionalSpec.sourceUrl} target="_blank" rel="noreferrer" className="shrink-0 text-amber-300 underline-offset-4 hover:underline">{decoded.regionalSpec.sourceTitle}</a>
               )}
             </div>
             <div className="grid grid-cols-2 gap-px border-t border-white/10 bg-white/10 text-center sm:grid-cols-4">
