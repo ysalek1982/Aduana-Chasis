@@ -41,8 +41,8 @@ export const decodeVinNhtsa = createServerFn({ method: "GET" })
     }
   });
 
-// Datos adicionales del fabricante por WMI (útil para vehículos fuera de EE.UU.
-// que NHTSA marca con ErrorCode 7). Devuelve razón social, país, dirección, etc.
+// Datos adicionales del fabricante por WMI. DecodeWMI es el endpoint correcto
+// para códigos de posiciones 1-3; GetManufacturerDetails espera nombre o ID.
 export const lookupWmiDetails = createServerFn({ method: "GET" })
   .validator((data) =>
     z
@@ -58,7 +58,7 @@ export const lookupWmiDetails = createServerFn({ method: "GET" })
   )
   .handler(async ({ data }) => {
     const wmi = data.wmi.toUpperCase();
-    const url = `https://vpic.nhtsa.dot.gov/api/vehicles/GetManufacturerDetails/${encodeURIComponent(wmi)}?format=json`;
+    const url = `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeWMI/${encodeURIComponent(wmi)}?format=json`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 10_000);
     try {

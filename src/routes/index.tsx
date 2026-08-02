@@ -257,6 +257,15 @@ function isMeaningfulValue(value: unknown): boolean {
 }
 
 const WMI_LABELS: Record<string, string> = {
+  CommonName: "Marca comercial",
+  ManufacturerName: "Razón social",
+  ParentCompanyName: "Empresa matriz",
+  Make: "Marca",
+  VehicleType: "Tipo de vehículo",
+  CreatedOn: "Fecha de registro",
+  DateAvailableToPublic: "Disponible públicamente desde",
+  UpdatedOn: "Última actualización",
+  URL: "Sitio del fabricante",
   Mfr_CommonName: "Marca comercial",
   Mfr_Name: "Razón social",
   Mfr_ID: "Identificador del fabricante",
@@ -418,6 +427,7 @@ const WMI_MAP: Record<string, string> = {
   "9BR": "Toyota (Brasil)",
   MR0: "Toyota (Tailandia)", MR2: "Toyota (Tailandia)",
   MHF: "Toyota (Indonesia)",
+  MHK: "PT Astra Daihatsu Motor (Indonesia)",
   // Ford
   "1FA": "Ford (EE. UU.)", "1FB": "Ford (EE. UU.)", "1FC": "Ford (EE. UU.)",
   "1FD": "Ford Trucks (EE. UU.)", "1FM": "Ford (EE. UU.)", "1FT": "Ford Trucks (EE. UU.)",
@@ -501,6 +511,7 @@ const WMI_MANUFACTURER_NAMES: Record<string, string> = {
   "8AJ": "Toyota Argentina S.A.",
   "8AT": "Toyota Argentina S.A.",
   "9BR": "Toyota do Brasil Ltda.",
+  MHK: "PT Astra Daihatsu Motor",
 };
 
 type RegionalVinSpec = {
@@ -512,7 +523,9 @@ type RegionalVinSpec = {
   engineFamily: string;
   displacement: string;
   fuel: string;
+  transmission?: string;
   production: string;
+  facts?: Array<{ label: string; value: string; confidence: "confirmed" | "model" | "verify" }>;
   evidence: string;
   sourceUrl: string;
 };
@@ -532,6 +545,30 @@ const REGIONAL_VIN_SPECS: RegionalVinSpec[] = [
     production: "Toyota Argentina · Zárate",
     evidence: "Modelo confirmado por patrón; versión y equipamiento deben verificarse en placa o ficha de fábrica.",
     sourceUrl: "https://media.toyota.com.br/63aeb2e6-b2c4-4917-bc26-47e0ac33a0a4.pdf",
+  },
+  {
+    prefix: "MHKAB1BA",
+    make: "Toyota",
+    model: "Raize 1.2 G",
+    body: "SUV compacto · 5 puertas",
+    drive: "4x2 · tracción delantera",
+    engineFamily: "WA-VE · 3 cilindros DOHC Dual VVT-i",
+    displacement: "1.2 L · 1.198 cm³",
+    fuel: "Gasolina · inyección EFI",
+    transmission: "Manual 5 vel. o CVT · confirmar variante",
+    production: "PT Astra Daihatsu Motor · Indonesia",
+    facts: [
+      { label: "Potencia máxima", value: "88 PS a 6.000 rpm", confidence: "model" },
+      { label: "Torque máximo", value: "113 Nm a 4.500 rpm", confidence: "model" },
+      { label: "Dimensiones", value: "4.030 × 1.710 × 1.635 mm", confidence: "model" },
+      { label: "Distancia entre ejes", value: "2.525 mm", confidence: "model" },
+      { label: "Despeje al suelo", value: "200 mm", confidence: "model" },
+      { label: "Tanque de combustible", value: "36 L", confidence: "model" },
+      { label: "Código de planta", value: "J · tabla pública no disponible", confidence: "verify" },
+      { label: "Variante / equipamiento", value: "Debe confirmarse en placa o documento", confidence: "verify" },
+    ],
+    evidence: "MHK identifica a PT Astra Daihatsu Motor y AB1BA está corroborado como Toyota Raize 1.2. La ficha del modelo aporta las especificaciones; transmisión y equipamiento deben confirmarse documentalmente.",
+    sourceUrl: "https://www.toyota.astra.co.id/sites/default/files/2022-08/brochures/leaflet_raize_grs_0722.pdf",
   },
 ];
 
@@ -707,7 +744,7 @@ function VinPage() {
       decoded.serial,
     ].filter(isMeaningfulValue).length;
     const regionalFields = regional
-      ? [regional.make, regional.model, regional.body, regional.drive, regional.engineFamily, regional.displacement, regional.fuel].filter(isMeaningfulValue).length
+      ? [regional.make, regional.model, regional.body, regional.drive, regional.engineFamily, regional.displacement, regional.fuel, regional.transmission, regional.production, ...(regional.facts?.map((fact) => fact.value) ?? [])].filter(isMeaningfulValue).length
       : 0;
     return {
       make: regional?.make ?? get(["Make"]) ?? decoded.maker.split(" (")[0] ?? "",
@@ -717,7 +754,8 @@ function VinPage() {
       engine: regional?.engineFamily ?? get(["EngineModel", "OtherEngineInfo"]) ?? "No informado",
       displacement: regional?.displacement ?? get(["DisplacementL", "DisplacementCC"]) ?? "No informado",
       fuel: regional?.fuel ?? get(["FuelTypePrimary"]) ?? "No informado",
-      transmission: get(["TransmissionStyle", "TransmissionSpeeds"]) ?? "No informada",
+      transmission: regional?.transmission ?? get(["TransmissionStyle", "TransmissionSpeeds"]) ?? "No informada",
+      production: regional?.production ?? get(["PlantCompanyName", "PlantCity", "PlantCountry"]) ?? "No informada",
       officialFields,
       registryFields,
       structuralFields,
@@ -1128,35 +1166,66 @@ function VinPage() {
                   <p className="text-sm font-medium text-slate-400">{automaticProfile.make}</p>
                   <h2 className="mt-1 text-3xl font-bold tracking-[-0.035em] text-white sm:text-5xl">
                     {automaticProfile.model}
-                    {decoded.year && <span className="ml-3 text-amber-300">{decoded.year}</span>}
+                    {decoded.year && <> <span className="text-amber-300">{decoded.year}</span></>}
                   </h2>
                   <p className="mt-3 break-all font-mono text-xs tracking-[0.16em] text-cyan-200 sm:text-sm">{vin}</p>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-center sm:grid-cols-4">
                   <SummaryMetric label="Origen" value={decoded.country || "—"} />
                   <SummaryMetric label="WMI" value={decoded.wmi || "—"} mono />
-                  <SummaryMetric label="Datos obtenidos" value={nhtsaLoading ? "…" : String(automaticProfile.totalFields)} mono />
+                  <SummaryMetric label="Campos consolidados" value={nhtsaLoading ? "…" : String(automaticProfile.totalFields)} mono />
                   <SummaryMetric label="Fuentes" value={String(2 + (decoded.regionalSpec ? 1 : 0) + (nhtsa ? 1 : 0) + (wmiDetails ? 1 : 0))} mono />
                 </div>
               </div>
             </div>
             <dl className="grid grid-cols-2 gap-px bg-white/10 md:grid-cols-4">
               {[
-                ["Carrocería", automaticProfile.body],
-                ["Tracción", automaticProfile.drive],
-                ["Motor", automaticProfile.engine],
-                ["Cilindrada", automaticProfile.displacement],
-                ["Combustible", automaticProfile.fuel],
-                ["Transmisión", automaticProfile.transmission],
-                ["Fabricante", decoded.manufacturerName || decoded.maker],
-                ["Serie de producción", formatSerial(decoded.serial)],
-              ].map(([label, value]) => (
+                ["Carrocería", automaticProfile.body, decoded.regionalSpec ? "Ficha de modelo" : "API"],
+                ["Tracción", automaticProfile.drive, decoded.regionalSpec ? "Ficha de modelo" : "API"],
+                ["Motor", automaticProfile.engine, decoded.regionalSpec ? "Ficha de modelo" : "API"],
+                ["Cilindrada", automaticProfile.displacement, decoded.regionalSpec ? "Ficha de modelo" : "API"],
+                ["Combustible", automaticProfile.fuel, decoded.regionalSpec ? "Ficha de modelo" : "API"],
+                ["Transmisión", automaticProfile.transmission, decoded.regionalSpec?.transmission ? "Confirmar variante" : "API"],
+                ["Fabricante", decoded.manufacturerName || decoded.maker, "WMI"],
+                ["Producción", automaticProfile.production, decoded.regionalSpec ? "Patrón regional" : "API"],
+                ["Año modelo", decoded.year ? String(decoded.year) : "No informado", "Codificado en VIN"],
+                ["Código de planta", decoded.plant || "No informado", "Código del fabricante"],
+                ["Serie de producción", formatSerial(decoded.serial), "Codificado en VIN"],
+                ["Descriptor VDS", decoded.vds || "No informado", "Codificado en VIN"],
+              ].map(([label, value, source]) => (
                 <div key={label} className="min-h-24 bg-[#0b182b] p-4 sm:p-5">
                   <dt className="text-[9px] uppercase tracking-[0.2em] text-slate-500 sm:text-[10px]">{label}</dt>
                   <dd className="mt-2 text-sm font-semibold leading-snug text-slate-100">{value}</dd>
+                  <span className={`mt-2 inline-flex rounded-full border px-2 py-0.5 font-mono text-[8px] uppercase tracking-wider ${source === "Confirmar variante" ? "border-amber-300/30 bg-amber-300/10 text-amber-200" : "border-cyan-300/20 bg-cyan-300/[0.06] text-cyan-200/80"}`}>
+                    {source}
+                  </span>
                 </div>
               ))}
             </dl>
+            {decoded.regionalSpec?.facts && decoded.regionalSpec.facts.length > 0 && (
+              <div className="border-t border-white/10 bg-[#09182b] p-5 sm:p-6">
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-cyan-300">Especificaciones complementarias</p>
+                    <p className="mt-1 text-xs text-slate-500">Datos de la ficha oficial del modelo asociados al patrón regional.</p>
+                  </div>
+                  <span className="rounded-full border border-cyan-300/20 px-2.5 py-1 font-mono text-[9px] uppercase tracking-wider text-cyan-200">
+                    {decoded.regionalSpec.facts.length} datos adicionales
+                  </span>
+                </div>
+                <dl className="grid grid-cols-1 gap-px overflow-hidden rounded-xl bg-white/10 sm:grid-cols-2 lg:grid-cols-4">
+                  {decoded.regionalSpec.facts.map((fact) => (
+                    <div key={fact.label} className="bg-[#0b182b] p-4">
+                      <dt className="text-[9px] uppercase tracking-[0.17em] text-slate-500">{fact.label}</dt>
+                      <dd className="mt-1.5 text-sm font-semibold leading-snug text-slate-100">{fact.value}</dd>
+                      <span className={`mt-2 inline-flex rounded-full border px-2 py-0.5 font-mono text-[8px] uppercase tracking-wider ${fact.confidence === "verify" ? "border-amber-300/30 bg-amber-300/10 text-amber-200" : "border-emerald-300/20 bg-emerald-300/[0.07] text-emerald-200"}`}>
+                        {fact.confidence === "verify" ? "Requiere verificación" : "Ficha oficial del modelo"}
+                      </span>
+                    </div>
+                  ))}
+                </dl>
+              </div>
+            )}
             <div className="flex flex-col gap-2 border-t border-white/10 px-5 py-4 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between">
               <p className="flex max-w-3xl items-start gap-2 leading-relaxed">
                 <Info className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" />
@@ -1205,8 +1274,14 @@ function VinPage() {
                 {typeof wmiDetails.Mfr_CommonName === "string" && wmiDetails.Mfr_CommonName && (
                   <Field label="Marca comercial (NHTSA)" value={String(wmiDetails.Mfr_CommonName)} />
                 )}
+                {typeof wmiDetails.CommonName === "string" && wmiDetails.CommonName && (
+                  <Field label="Marca comercial (NHTSA)" value={String(wmiDetails.CommonName)} />
+                )}
                 {typeof wmiDetails.Mfr_Name === "string" && wmiDetails.Mfr_Name && (
                   <Field label="Razón social (NHTSA)" value={String(wmiDetails.Mfr_Name)} />
+                )}
+                {typeof wmiDetails.ManufacturerName === "string" && wmiDetails.ManufacturerName && (
+                  <Field label="Razón social (NHTSA)" value={String(wmiDetails.ManufacturerName)} />
                 )}
                 {typeof wmiDetails.Country === "string" && wmiDetails.Country && (
                   <Field label="País registrado" value={String(wmiDetails.Country)} />
@@ -1495,7 +1570,7 @@ function NhtsaCoverageNotice({ country, maker }: { country: string; maker: strin
         {country ? ` · ${country}` : ""}.
       </p>
       <p className="mt-1 text-yellow-100/80">
-        La base NHTSA sólo cataloga fabricantes registrados para venta o importación en EE. UU.; si devuelve “no registrado”, no invalida un VIN regional como Toyota Argentina.
+        La base NHTSA sólo cataloga fabricantes registrados para venta o importación en EE. UU.; si devuelve “no registrado”, no invalida este VIN regional. La aplicación complementa el resultado con WMI y patrones documentados del mercado de origen.
       </p>
     </div>
   );
