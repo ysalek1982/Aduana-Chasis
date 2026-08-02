@@ -1,0 +1,21 @@
+{
+  "id": "/",
+  "name": "Aduana Nacional — Verificación de Chasis",
+  "short_name": "Aduana VIN",
+  "description": "Sistema de apoyo para verificación técnica de números de chasis vehicular.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#071426",
+  "theme_color": "#071426",
+  "lang": "es-BO",
+  "dir": "ltr",
+  "categories": ["government", "utilities", "productivity"],
+  "icons": [
+    { "src": "/pwa-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/pwa-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/pwa-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
