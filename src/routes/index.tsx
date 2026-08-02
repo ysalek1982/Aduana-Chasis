@@ -22,6 +22,10 @@ import {
   Ruler,
   Gauge,
   Radio,
+  Palette,
+  Save,
+  Truck,
+  Info,
 } from "lucide-react";
 import { Camera } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -214,6 +218,25 @@ function humanizeKey(key: string): string {
     .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
     .replace(/_/g, " ")
     .trim();
+}
+
+function localizeNhtsaValue(label: string, value: string): string {
+  const normalized = value.trim();
+  if (label === "Estado de decodificación" && /manufacturer is not registered/i.test(normalized)) {
+    return "Cobertura limitada: el fabricante no está registrado en NHTSA para venta o importación en EE. UU. Consulte la ficha regional o al fabricante.";
+  }
+  const exact: Record<string, string> = {
+    Yes: "Sí",
+    No: "No",
+    Standard: "Estándar",
+    Optional: "Opcional",
+    Diesel: "Diésel",
+    Gasoline: "Gasolina",
+    "Pickup": "Pickup",
+    "Truck": "Camión / pickup",
+    "Sport Utility Vehicle (SUV)/Multi-Purpose Vehicle (MPV)": "SUV / vehículo multipropósito",
+  };
+  return exact[normalized] ?? normalized;
 }
 
 function pickValue(row: NhtsaRow, keys: string[]): string | null {
@@ -460,6 +483,71 @@ const WMI_MANUFACTURER_NAMES: Record<string, string> = {
   "9BR": "Toyota do Brasil Ltda.",
 };
 
+type RegionalVinSpec = {
+  prefix: string;
+  make: string;
+  model: string;
+  body: string;
+  drive: string;
+  engineFamily: string;
+  displacement: string;
+  fuel: string;
+  production: string;
+  evidence: string;
+  sourceUrl: string;
+};
+
+// Patrones regionales respaldados por documentación del fabricante. Estos
+// complementan a NHTSA, cuya cobertura se concentra en el mercado de EE. UU.
+const REGIONAL_VIN_SPECS: RegionalVinSpec[] = [
+  {
+    prefix: "8AJBA3CD",
+    make: "Toyota",
+    model: "Hilux",
+    body: "Pickup · doble cabina",
+    drive: "4x4",
+    engineFamily: "1GD · turbodiésel",
+    displacement: "2.8 L · 2.755 cm³",
+    fuel: "Diésel",
+    production: "Toyota Argentina · Zárate",
+    evidence: "Modelo confirmado por patrón; versión y equipamiento deben verificarse en placa o ficha de fábrica.",
+    sourceUrl: "https://media.toyota.com.br/63aeb2e6-b2c4-4917-bc26-47e0ac33a0a4.pdf",
+  },
+];
+
+type InspectionRecord = {
+  color: string;
+  paintCode: string;
+  plate: string;
+  odometer: string;
+  notes: string;
+  updatedAt?: string;
+};
+
+const EMPTY_INSPECTION: InspectionRecord = {
+  color: "",
+  paintCode: "",
+  plate: "",
+  odometer: "",
+  notes: "",
+};
+
+const INSPECTION_KEY = "vin-decoder:inspection:";
+const VEHICLE_COLORS = [
+  ["", "Sin verificar", "#334155"],
+  ["Blanco", "Blanco", "#f8fafc"],
+  ["Negro", "Negro", "#111827"],
+  ["Plata", "Plata", "#cbd5e1"],
+  ["Gris", "Gris", "#64748b"],
+  ["Rojo", "Rojo", "#dc2626"],
+  ["Azul", "Azul", "#2563eb"],
+  ["Verde", "Verde", "#15803d"],
+  ["Beige / dorado", "Beige / dorado", "#c8a75d"],
+  ["Marrón", "Marrón", "#78350f"],
+  ["Amarillo", "Amarillo", "#eab308"],
+  ["Otro", "Otro", "#a855f7"],
+] as const;
+
 const YEAR_MAP: Record<string, number> = {
   "1": 2001, "2": 2002, "3": 2003, "4": 2004, "5": 2005,
   "6": 2006, "7": 2007, "8": 2008, "9": 2009,
@@ -539,6 +627,7 @@ function VinPage() {
   const [nhtsaSource, setNhtsaSource] = useState<"client" | "server" | null>(null);
   const [wmiDetails, setWmiDetails] = useState<Record<string, string | number | null> | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [inspection, setInspection] = useState<InspectionRecord>(EMPTY_INSPECTION);
 
   // Hidratar historial (client-only) + VIN desde URL
   useEffect(() => {
@@ -546,6 +635,19 @@ function VinPage() {
     const q = (search.vin ?? "").toUpperCase().replace(FORBIDDEN, "").replace(/[^A-Z0-9]/g, "").slice(0, 17);
     if (q) setVin(q);
   }, [search.vin]);
+
+  useEffect(() => {
+    if (vin.length !== 17 || typeof window === "undefined") {
+      setInspection(EMPTY_INSPECTION);
+      return;
+    }
+    try {
+      const saved = window.localStorage.getItem(`${INSPECTION_KEY}${vin}`);
+      setInspection(saved ? { ...EMPTY_INSPECTION, ...JSON.parse(saved) } : EMPTY_INSPECTION);
+    } catch {
+      setInspection(EMPTY_INSPECTION);
+    }
+  }, [vin]);
 
   const handleChange = (raw: string) => {
     const cleaned = raw
@@ -580,6 +682,7 @@ function VinPage() {
     const checkRequired = isCheckDigitMandatory(vin);
     const checkValid =
       expectedCheck !== null && vin.length === 17 ? expectedCheck === check : null;
+    const regionalSpec = REGIONAL_VIN_SPECS.find((spec) => vin.startsWith(spec.prefix)) ?? null;
     return {
       wmi,
       country,
@@ -594,6 +697,7 @@ function VinPage() {
       year,
       plant,
       serial,
+      regionalSpec,
     };
   }, [vin]);
 
@@ -602,6 +706,14 @@ function VinPage() {
     isComplete &&
     (decoded.checkValid === true ||
       (decoded.checkValid === false && decoded.checkRequired === false));
+
+  const saveInspection = () => {
+    if (!isComplete || typeof window === "undefined") return;
+    const record = { ...inspection, updatedAt: new Date().toISOString() };
+    window.localStorage.setItem(`${INSPECTION_KEY}${vin}`, JSON.stringify(record));
+    setInspection(record);
+    toast.success("Inspección guardada para este VIN.");
+  };
 
   // Guardar en historial cuando el VIN es válido (una sola vez por valor)
   useEffect(() => {
@@ -1117,6 +1229,111 @@ function VinPage() {
           </ResultCard>
         </section>
 
+        {isComplete && decoded.regionalSpec && (
+          <section className="mt-6 overflow-hidden rounded-2xl border border-amber-300/35 bg-gradient-to-br from-amber-300/[0.08] via-white/[0.035] to-emerald-400/[0.05] shadow-[0_22px_70px_rgba(5,12,27,.28)] sm:mt-8">
+            <div className="flex flex-col gap-4 border-b border-amber-300/15 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+              <div className="flex items-center gap-3">
+                <div className="grid h-11 w-11 place-items-center rounded-xl border border-amber-300/30 bg-amber-300/10 text-amber-300">
+                  <Truck className="h-5 w-5" />
+                </div>
+                <div>
+                  <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-amber-300/75">Decodificación regional</p>
+                  <h2 className="text-xl font-bold tracking-tight text-white sm:text-2xl">
+                    {decoded.regionalSpec.make} {decoded.regionalSpec.model}
+                  </h2>
+                </div>
+              </div>
+              <span className="w-fit rounded-full border border-emerald-300/25 bg-emerald-400/10 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-emerald-200">
+                Patrón {decoded.regionalSpec.prefix}
+              </span>
+            </div>
+            <dl className="grid grid-cols-2 gap-px bg-amber-300/10 sm:grid-cols-3">
+              {[
+                ["Modelo", decoded.regionalSpec.model],
+                ["Carrocería", decoded.regionalSpec.body],
+                ["Tracción", decoded.regionalSpec.drive],
+                ["Motor", decoded.regionalSpec.engineFamily],
+                ["Cilindrada", decoded.regionalSpec.displacement],
+                ["Combustible", decoded.regionalSpec.fuel],
+              ].map(([label, value]) => (
+                <div key={label} className="bg-[#0a1629]/90 p-4">
+                  <dt className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{label}</dt>
+                  <dd className="mt-1 text-sm font-semibold text-slate-100">{value}</dd>
+                </div>
+              ))}
+            </dl>
+            <div className="flex flex-col gap-2 p-4 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+              <p className="flex max-w-3xl items-start gap-2 leading-relaxed">
+                <Info className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" />
+                {decoded.regionalSpec.evidence}
+              </p>
+              <a href={decoded.regionalSpec.sourceUrl} target="_blank" rel="noreferrer" className="shrink-0 text-amber-300 underline-offset-4 hover:underline">
+                Ver referencia Toyota
+              </a>
+            </div>
+          </section>
+        )}
+
+        {isComplete && (
+          <section className="mt-6 rounded-2xl border border-cyan-300/25 bg-white/[0.035] p-4 backdrop-blur-xl sm:mt-8 sm:p-5">
+            <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="flex items-start gap-3">
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-cyan-300/25 bg-cyan-300/10 text-cyan-300">
+                  <Palette className="h-5 w-5" />
+                </div>
+                <div>
+                  <h2 className="font-mono text-sm uppercase tracking-[0.2em] text-cyan-200">Inspección del vehículo</h2>
+                  <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-400">
+                    El color, la placa y el kilometraje no están codificados en el VIN. Registralos desde la inspección física o la etiqueta del fabricante.
+                  </p>
+                </div>
+              </div>
+              {inspection.updatedAt && (
+                <span className="text-[10px] uppercase tracking-wider text-emerald-300">Registro guardado</span>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <label className="space-y-1.5">
+                <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Color exterior verificado</span>
+                <div className="relative">
+                  <span
+                    aria-hidden="true"
+                    className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 rounded-full border border-white/30"
+                    style={{ backgroundColor: VEHICLE_COLORS.find(([value]) => value === inspection.color)?.[2] ?? "#334155" }}
+                  />
+                  <select
+                    value={inspection.color}
+                    onChange={(event) => setInspection((prev) => ({ ...prev, color: event.target.value }))}
+                    className="h-11 w-full rounded-xl border border-slate-700 bg-[#081326] pl-10 pr-3 text-sm text-slate-100 outline-none transition focus:border-cyan-300/70"
+                  >
+                    {VEHICLE_COLORS.map(([value, label]) => <option key={label} value={value}>{label}</option>)}
+                  </select>
+                </div>
+              </label>
+              <InspectionInput label="Código de pintura" value={inspection.paintCode} placeholder="Ej. 040, 1G3, 8X8" onChange={(paintCode) => setInspection((prev) => ({ ...prev, paintCode }))} />
+              <InspectionInput label="Placa / matrícula" value={inspection.plate} placeholder="Ej. 1234 ABC" onChange={(plate) => setInspection((prev) => ({ ...prev, plate }))} />
+              <InspectionInput label="Kilometraje" value={inspection.odometer} placeholder="Ej. 42.500 km" onChange={(odometer) => setInspection((prev) => ({ ...prev, odometer }))} />
+            </div>
+            <label className="mt-3 block space-y-1.5">
+              <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">Observaciones de inspección</span>
+              <textarea
+                value={inspection.notes}
+                onChange={(event) => setInspection((prev) => ({ ...prev, notes: event.target.value.slice(0, 500) }))}
+                placeholder="Estado de la placa VIN, etiqueta de pintura, modificaciones visibles…"
+                rows={3}
+                className="w-full resize-y rounded-xl border border-slate-700 bg-[#081326] px-3 py-2.5 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-cyan-300/70"
+              />
+            </label>
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-[11px] text-slate-500">Los datos quedan guardados en este dispositivo y asociados a {vin}.</p>
+              <Button type="button" onClick={saveInspection} className="gap-2 bg-cyan-300 font-semibold text-[#071426] hover:bg-cyan-200">
+                <Save className="h-4 w-4" /> Guardar inspección
+              </Button>
+            </div>
+          </section>
+        )}
+
         {/* Características oficiales NHTSA */}
         {isComplete && (
           <section className="mt-6 sm:mt-8">
@@ -1338,6 +1555,30 @@ function ResultCard({
   );
 }
 
+function InspectionInput({
+  label,
+  value,
+  placeholder,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="space-y-1.5">
+      <span className="text-[10px] uppercase tracking-[0.18em] text-slate-500">{label}</span>
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value.toUpperCase().slice(0, 40))}
+        placeholder={placeholder}
+        className="h-11 w-full rounded-xl border border-slate-700 bg-[#081326] px-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-cyan-300/70"
+      />
+    </label>
+  );
+}
+
 function Field({
   label,
   value,
@@ -1378,7 +1619,7 @@ function NhtsaResults({ row }: { row: NhtsaRow }) {
       .map((f) => {
         const value = pickValue(row, f.keys);
         if (value !== null) f.keys.forEach((k) => usedKeys.add(k));
-        return { label: f.label, value };
+        return { label: f.label, value: value === null ? null : localizeNhtsaValue(f.label, value) };
       })
       .filter((x): x is { label: string; value: string } => x.value !== null);
     return { ...group, items };
