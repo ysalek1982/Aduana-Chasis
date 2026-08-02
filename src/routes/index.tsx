@@ -166,17 +166,18 @@ const NHTSA_GROUPS: NhtsaGroup[] = [
     icon: <Radio className="h-4 w-4" />,
     fields: [
       { label: "Nota del fabricante", keys: ["Note"] },
-      { label: "Estado de decodificación", keys: ["ErrorText"] },
     ],
   },
 ];
 
 type NhtsaRow = Record<string, string>;
 
-async function fetchVpic(vin: string, signal: AbortSignal): Promise<NhtsaRow> {
+async function fetchVpic(vin: string, modelYear: number | undefined, signal: AbortSignal): Promise<NhtsaRow> {
   // Endpoint "Extended" devuelve muchos más atributos (equipamiento,
   // seguridad, métricas, etc.) que el DecodeVinValues normal.
-  const url = `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValuesExtended/${encodeURIComponent(vin)}?format=json`;
+  const params = new URLSearchParams({ format: "json" });
+  if (modelYear) params.set("modelyear", String(modelYear));
+  const url = `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValuesExtended/${encodeURIComponent(vin)}?${params}`;
   const res = await fetch(url, { signal, headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error(`NHTSA respondió ${res.status}`);
   const json = (await res.json()) as { Results?: NhtsaRow[] };
@@ -222,6 +223,9 @@ function localizeNhtsaValue(label: string, value: string): string {
   if (label === "Estado de decodificación" && /manufacturer is not registered/i.test(normalized)) {
     return "Cobertura limitada: el fabricante no está registrado en NHTSA para venta o importación en EE. UU. Consulte la ficha regional o al fabricante.";
   }
+  if (label === "Información adicional" && /model year decoded.*may be incorrect/i.test(normalized)) {
+    return "El año calculado desde el VIN podría ser ambiguo por el ciclo de 30 años. La consulta se repitió enviando el año estimado para mejorar la precisión.";
+  }
   const exact: Record<string, string> = {
     Yes: "Sí",
     No: "No",
@@ -245,6 +249,25 @@ function pickValue(row: NhtsaRow, keys: string[]): string | null {
   }
   return null;
 }
+
+function isMeaningfulValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  const normalized = String(value).trim().toLowerCase();
+  return normalized !== "" && normalized !== "0" && normalized !== "not applicable";
+}
+
+const WMI_LABELS: Record<string, string> = {
+  Mfr_CommonName: "Marca comercial",
+  Mfr_Name: "Razón social",
+  Mfr_ID: "Identificador del fabricante",
+  Country: "País registrado",
+  StateProvince: "Estado / provincia",
+  City: "Ciudad",
+  Address: "Dirección registrada",
+  PostalCode: "Código postal",
+  VehicleTypes: "Tipos de vehículo",
+  OtherManufacturerDetails: "Otros datos del fabricante",
+};
 
 function getNhtsaErrorCodes(row: NhtsaRow): Set<string> {
   return new Set(
@@ -664,9 +687,27 @@ function VinPage() {
     const officialFields = nhtsa
       ? Object.entries(nhtsa).filter(([key, value]) => {
           if (IGNORED_KEYS.has(key) || !value) return false;
-          const normalized = String(value).trim().toLowerCase();
-          return normalized !== "" && normalized !== "0" && normalized !== "not applicable";
+          return isMeaningfulValue(value);
         }).length
+      : 0;
+    const registryFields = wmiDetails
+      ? Object.entries(wmiDetails).filter(([, value]) => isMeaningfulValue(value)).length
+      : 0;
+    const structuralFields = [
+      decoded.wmi,
+      decoded.country,
+      decoded.maker,
+      decoded.manufacturerName,
+      decoded.vds,
+      decoded.check,
+      decoded.expectedCheck,
+      decoded.yearChar,
+      decoded.year,
+      decoded.plant,
+      decoded.serial,
+    ].filter(isMeaningfulValue).length;
+    const regionalFields = regional
+      ? [regional.make, regional.model, regional.body, regional.drive, regional.engineFamily, regional.displacement, regional.fuel].filter(isMeaningfulValue).length
       : 0;
     return {
       make: regional?.make ?? get(["Make"]) ?? decoded.maker.split(" (")[0] ?? "",
@@ -678,8 +719,12 @@ function VinPage() {
       fuel: regional?.fuel ?? get(["FuelTypePrimary"]) ?? "No informado",
       transmission: get(["TransmissionStyle", "TransmissionSpeeds"]) ?? "No informada",
       officialFields,
+      registryFields,
+      structuralFields,
+      regionalFields,
+      totalFields: officialFields + registryFields + structuralFields + regionalFields,
     };
-  }, [decoded, nhtsa]);
+  }, [decoded, nhtsa, wmiDetails]);
 
   // Guardar en historial cuando el VIN es válido (una sola vez por valor)
   useEffect(() => {
@@ -704,7 +749,8 @@ function VinPage() {
         setNhtsaLoading(true);
         setNhtsaError(null);
         try {
-          const row = await fetchVpic(targetVin, signal);
+          const modelYear = YEAR_MAP[targetVin.charAt(9)];
+          const row = await fetchVpic(targetVin, modelYear, signal);
           setNhtsa(row);
           setNhtsaSource("client");
           setNhtsaError(null);
@@ -712,7 +758,7 @@ function VinPage() {
           if (e instanceof DOMException && e.name === "AbortError") return;
           // Fallback: server function (evita CORS/red del cliente)
           try {
-            const row = (await decodeVinServer({ data: { vin: targetVin } })) as NhtsaRow;
+            const row = (await decodeVinServer({ data: { vin: targetVin, modelYear } })) as NhtsaRow;
             setNhtsa(row);
             setNhtsaSource("server");
             setNhtsaError(null);
@@ -1086,10 +1132,11 @@ function VinPage() {
                   </h2>
                   <p className="mt-3 break-all font-mono text-xs tracking-[0.16em] text-cyan-200 sm:text-sm">{vin}</p>
                 </div>
-                <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="grid grid-cols-2 gap-2 text-center sm:grid-cols-4">
                   <SummaryMetric label="Origen" value={decoded.country || "—"} />
                   <SummaryMetric label="WMI" value={decoded.wmi || "—"} mono />
-                  <SummaryMetric label="Datos API" value={nhtsaLoading ? "…" : String(automaticProfile.officialFields)} mono />
+                  <SummaryMetric label="Datos obtenidos" value={nhtsaLoading ? "…" : String(automaticProfile.totalFields)} mono />
+                  <SummaryMetric label="Fuentes" value={String(2 + (decoded.regionalSpec ? 1 : 0) + (nhtsa ? 1 : 0) + (wmiDetails ? 1 : 0))} mono />
                 </div>
               </div>
             </div>
@@ -1118,6 +1165,19 @@ function VinPage() {
               {decoded.regionalSpec && (
                 <a href={decoded.regionalSpec.sourceUrl} target="_blank" rel="noreferrer" className="shrink-0 text-amber-300 underline-offset-4 hover:underline">Referencia del fabricante</a>
               )}
+            </div>
+            <div className="grid grid-cols-2 gap-px border-t border-white/10 bg-white/10 text-center sm:grid-cols-4">
+              {[
+                ["Estructura ISO", automaticProfile.structuralFields],
+                ["Ficha regional", automaticProfile.regionalFields],
+                ["Registro WMI", automaticProfile.registryFields],
+                ["API extendida", automaticProfile.officialFields],
+              ].map(([label, count]) => (
+                <div key={label} className="bg-[#081426] px-3 py-3">
+                  <p className="font-mono text-lg font-bold text-cyan-200">{count}</p>
+                  <p className="mt-0.5 text-[9px] uppercase tracking-[0.17em] text-slate-500">{label}</p>
+                </div>
+              ))}
             </div>
           </section>
         )}
@@ -1256,6 +1316,10 @@ function VinPage() {
           </ResultCard>
           </section>
         </details>
+
+        {isComplete && wmiDetails && (
+          <ManufacturerRegistryDetails row={wmiDetails} />
+        )}
 
         {/* Características oficiales NHTSA */}
         {isComplete && (
@@ -1519,6 +1583,46 @@ function Field({
   );
 }
 
+function ManufacturerRegistryDetails({
+  row,
+}: {
+  row: Record<string, string | number | null>;
+}) {
+  const items = Object.entries(row)
+    .filter(([, value]) => isMeaningfulValue(value))
+    .map(([key, value]) => ({
+      label: WMI_LABELS[key] ?? humanizeKey(key),
+      value: String(value).trim(),
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label, "es"));
+
+  if (items.length === 0) return null;
+
+  return (
+    <section className="mt-6 rounded-2xl border border-amber-300/25 bg-amber-300/[0.035] p-4 sm:mt-8 sm:p-5">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-amber-300/10 pb-3">
+        <div className="flex items-center gap-2">
+          <Factory className="h-4 w-4 text-amber-300" />
+          <h2 className="font-mono text-xs uppercase tracking-[0.22em] text-amber-200">
+            Registro completo del fabricante
+          </h2>
+        </div>
+        <span className="rounded-full border border-amber-300/20 px-2.5 py-1 font-mono text-[10px] text-amber-200">
+          {items.length} campos WMI
+        </span>
+      </div>
+      <dl className="grid grid-cols-1 gap-x-8 gap-y-2 sm:grid-cols-2 xl:grid-cols-3">
+        {items.map((item) => (
+          <div key={item.label} className="flex items-start justify-between gap-3 border-b border-slate-800/70 py-2">
+            <dt className="text-[10px] uppercase tracking-[0.16em] text-slate-500">{item.label}</dt>
+            <dd className="max-w-[60%] break-words text-right text-sm font-semibold text-slate-100">{item.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
 function NhtsaResults({ row }: { row: NhtsaRow }) {
   // Registrar todas las keys ya mostradas en algún grupo para no duplicar en "Otros datos"
   const usedKeys = new Set<string>();
@@ -1546,7 +1650,20 @@ function NhtsaResults({ row }: { row: NhtsaRow }) {
     .map(([k, v]) => ({ label: humanizeKey(k), value: String(v).trim() }))
     .sort((a, b) => a.label.localeCompare(b.label, "es"));
 
-  if (groups.length === 0 && extras.length === 0) {
+  const diagnostics = [
+    { label: "Código de respuesta", key: "ErrorCode" },
+    { label: "Estado de decodificación", key: "ErrorText" },
+    { label: "Información adicional", key: "AdditionalErrorText" },
+    { label: "VIN sugerido", key: "SuggestedVIN" },
+    { label: "Valores posibles", key: "PossibleValues" },
+  ]
+    .filter((item) => isMeaningfulValue(row[item.key]))
+    .map((item) => ({
+      label: item.label,
+      value: localizeNhtsaValue(item.label, String(row[item.key]).trim()),
+    }));
+
+  if (groups.length === 0 && extras.length === 0 && diagnostics.length === 0) {
     return (
       <div className="rounded-2xl border border-yellow-400/30 bg-yellow-500/5 p-4 text-sm text-yellow-200">
         La base NHTSA no devolvió datos catalogados para este VIN. Suele
@@ -1557,6 +1674,23 @@ function NhtsaResults({ row }: { row: NhtsaRow }) {
 
   return (
     <>
+      {diagnostics.length > 0 && (
+        <div className="mb-4 rounded-2xl border border-slate-700/70 bg-slate-950/35 p-4 sm:p-5">
+          <div className="mb-3 flex items-center gap-2">
+            <Info className="h-4 w-4 text-amber-300" />
+            <h3 className="font-mono text-xs uppercase tracking-[0.2em] text-amber-200">Cobertura y diagnóstico</h3>
+          </div>
+          <dl className="space-y-2">
+            {diagnostics.map((item) => (
+              <div key={item.label} className="grid gap-1 border-t border-white/5 pt-2 sm:grid-cols-[13rem_1fr]">
+                <dt className="text-[10px] uppercase tracking-[0.16em] text-slate-500">{item.label}</dt>
+                <dd className="break-words text-sm leading-relaxed text-slate-200">{item.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2 xl:grid-cols-3">
         {groups.map((group) => (
           <div
@@ -1586,10 +1720,10 @@ function NhtsaResults({ row }: { row: NhtsaRow }) {
       </div>
 
       {extras.length > 0 && (
-        <details className="group mt-4 animate-fade-in rounded-2xl border border-cyan-400/20 bg-white/[0.03] p-4 backdrop-blur-xl sm:p-5">
+        <details open className="group mt-4 animate-fade-in rounded-2xl border border-cyan-400/20 bg-white/[0.03] p-4 backdrop-blur-xl sm:p-5">
           <summary className="flex cursor-pointer items-center justify-between gap-2 font-mono text-xs uppercase tracking-[0.2em] text-cyan-300">
             <span className="flex items-center gap-2">
-              <Database className="h-4 w-4" /> Otros datos ({extras.length})
+              <Database className="h-4 w-4" /> Datos adicionales decodificados ({extras.length})
             </span>
             <span className="text-[10px] text-slate-500 group-open:hidden">
               Mostrar

@@ -13,12 +13,15 @@ export const decodeVinNhtsa = createServerFn({ method: "GET" })
           .min(11)
           .max(17)
           .regex(/^[A-HJ-NPR-Z0-9]+$/i, "VIN inválido"),
+        modelYear: z.number().int().min(1980).max(2100).optional(),
       })
       .parse(data),
   )
   .handler(async ({ data }) => {
     const vin = data.vin.toUpperCase();
-    const url = `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValuesExtended/${encodeURIComponent(vin)}?format=json`;
+    const params = new URLSearchParams({ format: "json" });
+    if (data.modelYear) params.set("modelyear", String(data.modelYear));
+    const url = `https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValuesExtended/${encodeURIComponent(vin)}?${params}`;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12_000);
     try {
