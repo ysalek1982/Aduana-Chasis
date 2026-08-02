@@ -24,6 +24,8 @@ import {
   Gauge,
   Radio,
   Info,
+  CircleHelp,
+  BookOpenCheck,
 } from "lucide-react";
 import { Camera } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -32,6 +34,14 @@ import { useServerFn } from "@tanstack/react-start";
 import { decodeVinNhtsa, lookupWmiDetails } from "@/lib/vin.functions";
 import { VinScanner } from "@/components/vin-scanner";
 import { findRegionalVinSpec } from "@/lib/vin-registry";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 
 // ============ NHTSA vPIC API ============
 // API pública oficial del NHTSA para decodificar VINs — sin auth, CORS habilitado.
@@ -321,6 +331,14 @@ export const Route = createFileRoute("/")({
 // ============ Diccionarios ============
 // Rangos oficiales SAE J853 (WMI = primeros 2 chars determinan país/región).
 // Se busca primero por el par exacto (ej. "8A"), luego por el primer char.
+const FIRST_CHARACTER_ORIGIN: Record<string, string> = {
+  A: "África", B: "África", C: "África", D: "África", E: "África", F: "África", G: "África", H: "África",
+  J: "Japón", K: "Asia", L: "China", M: "Asia", N: "Asia", P: "Asia", R: "Asia",
+  S: "Europa", T: "Europa", U: "Europa", V: "Europa", W: "Europa", X: "Europa", Y: "Europa", Z: "Europa",
+  "1": "Estados Unidos", "2": "Canadá", "3": "México", "4": "Estados Unidos", "5": "Estados Unidos",
+  "6": "Oceanía", "7": "Oceanía", "8": "Sudamérica", "9": "Sudamérica",
+};
+
 const COUNTRY_MAP: Record<string, string> = {
   // África
   AA: "Sudáfrica", AB: "Sudáfrica", AC: "Sudáfrica", AD: "Sudáfrica", AE: "Sudáfrica", AF: "Sudáfrica", AG: "Sudáfrica", AH: "Sudáfrica",
@@ -621,13 +639,14 @@ function VinPage() {
     const prefix2 = vin.slice(0, 2);
     const country =
       COUNTRY_MAP[prefix2] ??
-      COUNTRY_MAP[c(0)] ??
+      FIRST_CHARACTER_ORIGIN[c(0)] ??
       (c(0) ? "Región no catalogada" : "");
     // El fabricante SOLO se determina con WMI de 3 caracteres.
     // Sin esto, adivinar por el 2º char produce falsos positivos
     // (p.ej. "8AJ" es Toyota Argentina, no "Audi").
     const maker = wmiDesc ?? (vin.length >= 3 ? "Fabricante no catalogado en tabla local" : "");
     const vds = vin.slice(3, 8);
+    const vdsFull = vin.slice(3, 9);
     const check = c(8);
     const yearChar = c(9);
     const year = yearChar ? YEAR_MAP[yearChar] : undefined;
@@ -644,6 +663,7 @@ function VinPage() {
       maker,
       manufacturerName,
       vds,
+      vdsFull,
       check,
       expectedCheck,
       checkRequired,
@@ -661,6 +681,74 @@ function VinPage() {
     isComplete &&
     (decoded.checkValid === true ||
       (decoded.checkValid === false && decoded.checkRequired === false));
+
+  const progressiveSections = useMemo(() => {
+    const wmiCount = Math.min(vin.length, 3);
+    const vdsCount = Math.max(0, Math.min(vin.length, 9) - 3);
+    const visCount = Math.max(0, Math.min(vin.length, 17) - 9);
+
+    const wmiValue =
+      vin.length === 0
+        ? "Esperando el primer carácter"
+        : vin.length < 3
+          ? `${decoded.country || "Región en análisis"} · faltan ${3 - vin.length} caracteres para el WMI`
+          : decoded.manufacturerName || decoded.maker;
+
+    const vdsValue =
+      vin.length < 4
+        ? "Comienza en la posición 4"
+        : vin.length < 8
+          ? `Descriptor en formación · ${Math.min(vin.length - 3, 5)}/5 caracteres`
+          : decoded.regionalSpec
+            ? `${decoded.regionalSpec.make} ${decoded.regionalSpec.model} · patrón ${decoded.regionalSpec.prefix}`
+            : vin.length < 9
+              ? `${decoded.vds} · falta el carácter de control`
+              : `${decoded.vdsFull} · requiere tabla específica del fabricante`;
+
+    const visValue =
+      vin.length < 10
+        ? "Comienza en la posición 10"
+        : vin.length === 10
+          ? decoded.year
+            ? `Año modelo ${decoded.year} · código ${decoded.yearChar}`
+            : `Código de año ${decoded.yearChar} no catalogado`
+          : vin.length < 12
+            ? `${decoded.year ? `Año ${decoded.year}` : "Año no catalogado"} · planta ${decoded.plant || "pendiente"}`
+            : `${decoded.year ? `Año ${decoded.year}` : "Año no catalogado"} · planta ${decoded.plant || "—"} · serie ${decoded.serial}${vin.length < 17 ? "…" : ""}`;
+
+    return [
+      {
+        key: "wmi",
+        short: "WMI",
+        title: "Origen y fabricante",
+        range: "1–3",
+        count: wmiCount,
+        total: 3,
+        value: wmiValue,
+        color: "amber" as const,
+      },
+      {
+        key: "vds",
+        short: "VDS",
+        title: "Descripción y control",
+        range: "4–9",
+        count: vdsCount,
+        total: 6,
+        value: vdsValue,
+        color: "cyan" as const,
+      },
+      {
+        key: "vis",
+        short: "VIS",
+        title: "Producción e identidad",
+        range: "10–17",
+        count: visCount,
+        total: 8,
+        value: visValue,
+        color: "emerald" as const,
+      },
+    ];
+  }, [vin, decoded]);
 
   const automaticProfile = useMemo(() => {
     const regional = decoded.regionalSpec;
@@ -1019,9 +1107,12 @@ function VinPage() {
               <span className="h-px w-8 bg-amber-300/40" aria-hidden />
               <span>Control vehicular</span>
             </div>
-            <h1 className="mt-2 text-2xl font-bold tracking-tight text-white sm:text-4xl">
-              Verificación de chasis
-            </h1>
+            <div className="mt-2 flex items-center gap-3">
+              <h1 className="text-2xl font-bold tracking-tight text-white sm:text-4xl">
+                Verificación de chasis
+              </h1>
+              <VinGuideDialog />
+            </div>
             <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-400 sm:text-sm">
               Consulta técnica del Número de Identificación Vehicular (VIN) y validación estructural ISO 3779.
             </p>
@@ -1061,18 +1152,38 @@ function VinPage() {
           <div className="mt-4 grid grid-cols-[repeat(17,minmax(0,1fr))] gap-0.5 sm:gap-1">
             {Array.from({ length: 17 }).map((_, i) => {
               const active = i < vin.length;
+              const sectionClass =
+                i < 3
+                  ? active
+                    ? "bg-amber-300 shadow-[0_0_10px_rgba(252,211,77,0.75)]"
+                    : "bg-amber-300/15"
+                  : i < 9
+                    ? active
+                      ? "bg-[#38bdf8] shadow-[0_0_10px_rgba(56,189,248,0.75)]"
+                      : "bg-[#38bdf8]/15"
+                    : active
+                      ? "bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.75)]"
+                      : "bg-emerald-400/15";
               return (
                 <div
                   key={i}
-                  className={
-                    "h-1.5 rounded-sm transition-all duration-200 sm:h-2 " +
-                    (active
-                      ? "bg-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.9)]"
-                      : "bg-slate-700/60")
-                  }
+                  role="img"
+                  aria-label={`Posición ${i + 1}: ${active ? vin[i] : "pendiente"}`}
+                  className={`h-1.5 rounded-sm transition-all duration-200 sm:h-2 ${sectionClass}`}
                 />
               );
             })}
+          </div>
+          <div className="mt-2 grid grid-cols-[3fr_6fr_8fr] gap-1 font-mono text-[8px] uppercase tracking-[0.18em] sm:text-[9px]">
+            <span className="text-amber-300/80">WMI · 1–3</span>
+            <span className="text-center text-[#67e8f9]">VDS · 4–9</span>
+            <span className="text-right text-emerald-300/80">VIS · 10–17</span>
+          </div>
+
+          <div className="mt-4 grid gap-2 md:grid-cols-3" aria-live="polite">
+            {progressiveSections.map((section) => (
+              <ProgressiveSectionCard key={section.key} section={section} />
+            ))}
           </div>
 
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
@@ -1260,7 +1371,7 @@ function VinPage() {
                 ["Año modelo", decoded.year ? String(decoded.year) : "No informado", "Codificado en VIN"],
                 ["Código de planta", decoded.plant || "No informado", "Código del fabricante"],
                 ["Serie de producción", formatSerial(decoded.serial), "Codificado en VIN"],
-                ["Descriptor VDS", decoded.vds || "No informado", "Codificado en VIN"],
+                ["Descriptor · posiciones 4–8", decoded.vds || "No informado", "Codificado en VIN"],
               ].map(([label, value, source]) => (
                 <div key={label} className="min-h-24 bg-[#0b182b] p-4 sm:p-5">
                   <dt className="text-[9px] uppercase tracking-[0.2em] text-slate-500 sm:text-[10px]">{label}</dt>
@@ -1398,8 +1509,13 @@ function VinPage() {
               big
             />
             <p className="text-[11px] text-slate-500">
-              Motor, carrocería, sistema de retención y transmisión.
+              Puede codificar motor, carrocería, retención y transmisión; su interpretación depende de la tabla del fabricante.
             </p>
+            {decoded.regionalSpec && (
+              <p className="text-[11px] font-semibold text-emerald-300">
+                Patrón reconocido: {decoded.regionalSpec.make} {decoded.regionalSpec.model}
+              </p>
+            )}
           </ResultCard>
 
           <ResultCard
@@ -1613,6 +1729,178 @@ function VinPage() {
         }}
       />
     </>
+  );
+}
+
+type ProgressiveSection = {
+  key: string;
+  short: string;
+  title: string;
+  range: string;
+  count: number;
+  total: number;
+  value: string;
+  color: "amber" | "cyan" | "emerald";
+};
+
+function ProgressiveSectionCard({ section }: { section: ProgressiveSection }) {
+  const complete = section.count === section.total;
+  const styles = {
+    amber: {
+      border: "border-amber-300/25",
+      text: "text-amber-200",
+      fill: "bg-amber-300",
+      glow: "shadow-[0_0_18px_rgba(252,211,77,0.14)]",
+    },
+    cyan: {
+      border: "border-[#38bdf8]/30",
+      text: "text-[#67e8f9]",
+      fill: "bg-[#38bdf8]",
+      glow: "shadow-[0_0_18px_rgba(34,211,238,0.14)]",
+    },
+    emerald: {
+      border: "border-emerald-300/25",
+      text: "text-emerald-200",
+      fill: "bg-emerald-300",
+      glow: "shadow-[0_0_18px_rgba(52,211,153,0.14)]",
+    },
+  }[section.color];
+  const percentage = Math.round((section.count / section.total) * 100);
+
+  return (
+    <div className={`rounded-xl border bg-slate-950/35 p-3 transition ${styles.border} ${section.count > 0 ? styles.glow : "opacity-65"}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className={`font-mono text-[10px] font-bold uppercase tracking-[0.2em] ${styles.text}`}>
+            {section.short} · {section.range}
+          </p>
+          <p className="mt-0.5 text-[10px] text-slate-500">{section.title}</p>
+        </div>
+        <span className={`font-mono text-[9px] ${complete ? styles.text : "text-slate-500"}`}>
+          {section.count}/{section.total}
+        </span>
+      </div>
+      <div className="mt-2 h-1 overflow-hidden rounded-full bg-slate-800">
+        <div className={`h-full rounded-full transition-all duration-300 ${styles.fill}`} style={{ width: `${percentage}%` }} />
+      </div>
+      <p className="mt-2 min-h-8 text-[11px] leading-relaxed text-slate-300">{section.value}</p>
+    </div>
+  );
+}
+
+function VinGuideDialog() {
+  const example = "1HGBH41JXMN109186";
+  const sections = [
+    {
+      key: "wmi",
+      title: "WMI · Identificador mundial",
+      range: "Posiciones 1–3",
+      color: "border-amber-300/30 bg-amber-300/[0.06] text-amber-200",
+      description: "El conjunto identifica la región, el fabricante y el tipo general de vehículo. Con un solo carácter sólo puede inferirse una región; el fabricante requiere el WMI completo.",
+    },
+    {
+      key: "vds",
+      title: "VDS · Descripción del vehículo",
+      range: "Posiciones 4–9",
+      color: "border-cyan-300/30 bg-cyan-300/[0.06] text-cyan-200",
+      description: "Las posiciones 4–8 pueden codificar modelo, carrocería, motor, retención o transmisión según la tabla del fabricante. La posición 9 es el control matemático en Norteamérica y puede ser referencial en otros mercados.",
+    },
+    {
+      key: "vis",
+      title: "VIS · Identificador del vehículo",
+      range: "Posiciones 10–17",
+      color: "border-emerald-300/30 bg-emerald-300/[0.06] text-emerald-200",
+      description: "La posición 10 codifica el año modelo, la 11 identifica la planta según el fabricante y las posiciones 12–17 forman la secuencia de producción. El código de año se repite cada 30 años.",
+    },
+  ];
+
+  return (
+    <Dialog>
+      <DialogTrigger asChild>
+        <button
+          type="button"
+          aria-label="Aprender cómo se interpreta un VIN"
+          title="Cómo funciona el VIN"
+          className="group grid h-9 w-9 shrink-0 place-items-center rounded-full border border-amber-300/35 bg-amber-300/[0.08] text-amber-200 transition hover:scale-105 hover:border-amber-200 hover:bg-amber-300/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300"
+        >
+          <CircleHelp className="h-5 w-5 transition-transform group-hover:rotate-12" />
+        </button>
+      </DialogTrigger>
+      <DialogContent className="max-h-[90vh] max-w-4xl overflow-y-auto border-amber-300/25 bg-[#081426] p-0 text-slate-100 shadow-[0_30px_100px_rgba(0,0,0,0.65)]">
+        <DialogHeader className="border-b border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(252,211,77,0.15),transparent_52%)] p-6 pr-14 sm:p-8">
+          <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-xl border border-amber-300/30 bg-amber-300/10 text-amber-200">
+            <BookOpenCheck className="h-5 w-5" />
+          </div>
+          <DialogTitle className="text-left text-2xl font-bold tracking-tight text-white sm:text-3xl">
+            Cómo leer un número de chasis
+          </DialogTitle>
+          <DialogDescription className="max-w-2xl text-left text-sm leading-relaxed text-slate-400">
+            Un VIN moderno utiliza 17 caracteres y se interpreta por secciones. La aplicación revela cada bloque a medida que se completa, respetando las tablas particulares de cada fabricante.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-6 p-5 sm:p-8">
+          <div>
+            <div className="grid grid-cols-[repeat(17,minmax(0,1fr))] gap-0.5 sm:gap-1">
+              {Array.from(example).map((character, index) => {
+                const colors =
+                  index < 3
+                    ? "border-amber-300/35 bg-amber-300/10 text-amber-100"
+                    : index < 9
+                      ? "border-cyan-300/35 bg-cyan-300/10 text-cyan-100"
+                      : "border-emerald-300/35 bg-emerald-300/10 text-emerald-100";
+                return (
+                  <div key={`${character}-${index}`} className={`grid aspect-square place-items-center rounded border font-mono text-[9px] font-bold sm:text-sm ${colors}`}>
+                    {character}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-2 grid grid-cols-[3fr_6fr_8fr] font-mono text-[8px] uppercase tracking-[0.18em] sm:text-[10px]">
+              <span className="text-amber-300">WMI</span>
+              <span className="text-center text-cyan-300">VDS</span>
+              <span className="text-right text-emerald-300">VIS</span>
+            </div>
+          </div>
+
+          <div className="grid gap-3 lg:grid-cols-3">
+            {sections.map((section) => (
+              <section key={section.key} className={`rounded-2xl border p-4 ${section.color}`}>
+                <p className="font-mono text-[10px] uppercase tracking-[0.18em] opacity-70">{section.range}</p>
+                <h3 className="mt-1 text-sm font-bold text-white">{section.title}</h3>
+                <p className="mt-2 text-xs leading-relaxed text-slate-300">{section.description}</p>
+              </section>
+            ))}
+          </div>
+
+          <section className="grid gap-4 rounded-2xl border border-white/10 bg-white/[0.025] p-5 md:grid-cols-[0.8fr_1.2fr]">
+            <div>
+              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-amber-300">Lectura progresiva</p>
+              <h3 className="mt-2 text-lg font-bold text-white">Qué se conoce mientras escribe</h3>
+            </div>
+            <ol className="space-y-3 text-xs leading-relaxed text-slate-300">
+              <li><span className="font-mono text-amber-200">1 carácter</span> · región probable de fabricación.</li>
+              <li><span className="font-mono text-amber-200">3 caracteres</span> · WMI y fabricante, si está catalogado.</li>
+              <li><span className="font-mono text-cyan-200">8–9 caracteres</span> · patrón de modelo y características sólo cuando existe una tabla técnica comprobada.</li>
+              <li><span className="font-mono text-emerald-200">10–17 caracteres</span> · año, planta, secuencia y verificación integral.</li>
+            </ol>
+          </section>
+
+          <div className="rounded-xl border border-amber-300/20 bg-amber-300/[0.05] p-4 text-xs leading-relaxed text-slate-300">
+            <strong className="text-amber-200">Límite importante:</strong> el VIN identifica el vehículo y su configuración de fábrica, pero no codifica normalmente el color actual, la matrícula, el propietario ni el número individual del motor. Los antecedentes, gravámenes o reportes requieren fuentes externas y no forman parte de esta aplicación.
+          </div>
+
+          <a
+            href="https://www.nhtsa.gov/vin-decoder"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex text-xs font-semibold text-cyan-300 underline-offset-4 hover:underline"
+          >
+            Referencia técnica oficial de NHTSA sobre el VIN
+          </a>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 
